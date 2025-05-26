@@ -14,20 +14,20 @@ from machine import Pin, FPIOA
 # 格式: (pH值, (L_min, L_max, A_min, A_max, B_min, B_max))
 pH_thresholds = [
     (0, (37, 43, 29, 51, -4, 5)),    # pH 0 - 红色
-    (1, (37, 43, 29, 51, -4, 5)),    # pH 1
-    (2, (43, 45, 31, 58, -9, 16)),    # pH 2
+    (1, (16, 59, 23, 32, -10, 12)),    # pH 1
+    (2, (35, 41, 25, 46, 14, 27)),    # pH 2
     (3, (22, 76, 28, 73, 18, 53)),     # pH 3
-    (4, (22, 81, 5, 8, 32, 44)),     # pH 4
-    (5, (22, 61, -20, -1, 16, 29)),     # pH 5
+    (4, (9, 80, 17, 24, 27, 45)),     # pH 4
+    (5, (5, 77, 5, 28, 37, 60)),     # pH 5
     (6, (11, 72, 3, 9, 35, 54)),     # pH 6
     (7, (11, 72, -11, -1, 16, 36)),    # pH 7
     (8, (21, 40, -20, -4, 9, 22)),   # pH 8
-    (9, (26, 36, -38, -4, 2, 5)),   # pH 9
-    (10, (17, 29, -21, -6, -25, 1)),  # pH 10
-    (11, (17, 23, -6, -1, -11, -3)),  # pH 11
-    (12, (16, 30, 3, 14, -21, -3)),  # pH 12
-    (13,  (2, 36, 9, 11, -19, -9)),  # pH 13
-    (14, (21, 25, -4, 8, -11, 0))   # pH 14
+    (9, (7, 33, -26, -2, -2, 7)),   # pH 9
+    (10,(5, 28, -109, 1, -2, 5)),  # pH 10
+    (11, (5, 28, -112, 1, -60, -4)),  # pH 11
+    (12, (7, 19, -29, 6, -37, 34)),  # pH 12
+    (13,(0, 31, 7, 22, -65, -10)),  # pH 13
+    (14,(5, 62, -36, 25, -54, -14))   # pH 14
 ]
 
 # 初始化FPIOA
@@ -35,8 +35,10 @@ fpioa = FPIOA()
 # 配置按键引脚
 fpioa.set_function(34, FPIOA.GPIO34)  # KEY0
 fpioa.set_function(35, FPIOA.GPIO35)  # KEY1
+fpioa.set_function(0, FPIOA.GPIO0)    # KEY2
 key0 = Pin(34, Pin.IN, pull=Pin.PULL_UP, drive=7)
 key1 = Pin(35, Pin.IN, pull=Pin.PULL_UP, drive=7)
+key2 = Pin(0, Pin.IN, pull=Pin.PULL_DOWN, drive=7)  # KEY2默认下拉
 
 # 定义状态
 PREVIEW_MODE = 0  # 实时预览模式
@@ -45,6 +47,72 @@ DETECT_MODE = 1   # 单次识别模式
 # 定义显示模式
 SINGLE_DETECT = 0  # 只显示最大面积的pH值
 ALL_DETECT = 1    # 显示所有检测到的pH值
+
+# 定义检测方案
+OLD_DETECT = 0    # 使用旧的基于阈值的检测方案
+NEW_DETECT = 1    # 使用新的基于矩形检测和颜色分析的方案
+
+# RGB到LAB转换的常量
+PARAM_13 = 1.0 / 3.0
+PARAM_16116 = 16.0 / 116.0
+XN = 0.950456
+YN = 1.0
+ZN = 1.088754
+
+# 全局变量
+io25 = None  # GPIO25引脚对象
+detect_method = OLD_DETECT  # 默认使用新方案
+
+def gamma(x):
+    """Gamma校正函数"""
+    return pow((x + 0.055) / 1.055, 2.4) if x > 0.04045 else x / 12.92
+
+def rgb_to_xyz(r, g, b):
+    """RGB转XYZ颜色空间"""
+    # 归一化RGB值
+    r = r / 255.0
+    g = g / 255.0
+    b = b / 255.0
+    
+    # Gamma校正
+    r = gamma(r)
+    g = gamma(g)
+    b = gamma(b)
+    
+    # RGB到XYZ的转换矩阵
+    x = 0.4124564 * r + 0.3575761 * g + 0.1804375 * b
+    y = 0.2126729 * r + 0.7151522 * g + 0.0721750 * b
+    z = 0.0193339 * r + 0.1191920 * g + 0.9503041 * b
+    
+    return x, y, z
+
+def xyz_to_lab(x, y, z):
+    """XYZ转LAB颜色空间"""
+    # 归一化
+    x /= XN
+    y /= YN
+    z /= ZN
+    
+    # 计算f函数
+    def f(t):
+        return pow(t, PARAM_13) if t > 0.008856 else 7.787 * t + PARAM_16116
+    
+    fx = f(x)
+    fy = f(y)
+    fz = f(z)
+    
+    # 计算LAB值
+    l = 116.0 * fy - 16.0
+    l = max(0.0, l)  # 确保L值非负
+    a = 500.0 * (fx - fy)
+    b = 200.0 * (fy - fz)
+    
+    return l, a, b
+
+def rgb_to_lab(r, g, b):
+    """RGB转LAB颜色空间"""
+    x, y, z = rgb_to_xyz(r, g, b)
+    return xyz_to_lab(x, y, z)
 
 def calculate_iou(box1, box2):
     """计算两个框的IoU（交并比）"""
@@ -66,7 +134,7 @@ def calculate_iou(box1, box2):
     iou = intersection / union if union > 0 else 0
     return iou
 
-def non_max_suppression(detections, iou_threshold=0.5):
+def non_max_suppression(detections, iou_threshold=0.1): # iou越大，重叠度越高
     """非极大值抑制，去除重叠的检测框"""
     if not detections:
         return []
@@ -88,50 +156,122 @@ def non_max_suppression(detections, iou_threshold=0.5):
     
     return keep
 
-def detect_all_ph(img):
-    """检测并显示所有pH值，使用NMS去重"""
+def calculate_lab_distance(lab1, lab2):
+    """计算两个LAB颜色值之间的欧氏距离"""
+    return ((lab1[0] - lab2[0])**2 + (lab1[1] - lab2[1])**2 + (lab1[2] - lab2[2])**2)**0.5
+
+def find_closest_ph(lab_value):
+    """有问题，暂无法运行。根据LAB颜色值找到最接近的pH值"""
+    min_distance = float('inf')
+    closest_ph = None
+    
+    for ph, (l_min, l_max, a_min, a_max, b_min, b_max) in pH_thresholds:
+        # 计算LAB范围的中心点
+        lab_center = (
+            (l_min + l_max) / 2,
+            (a_min + a_max) / 2,
+            (b_min + b_max) / 2
+        )
+        # 计算与当前pH值的LAB中心点的距离
+        distance = calculate_lab_distance(lab_value, lab_center)
+        if distance < min_distance:
+            min_distance = distance
+            closest_ph = ph
+    
+    return closest_ph
+
+def detect_all_ph_new(img):
+    """有问题，暂无法运行。使用新方案检测并显示所有pH值"""
     detected_ph_list = []
     
-    # 遍历所有pH值进行检测
-    for ph_value, threshold in pH_thresholds:
-        blobs = img.find_blobs([threshold], pixels_threshold=200)
-        for blob in blobs:
-            detected_ph_list.append((ph_value, blob))
+    # 首先进行矩形检测
+    for r in img.find_rects(threshold=8000):
+        # 获取矩形区域
+        x, y, w, h = r.rect()
+        # 提取矩形区域内的图像
+        roi = img.copy(x, y, w, h)
+        
+        # 计算ROI区域的平均LAB值
+        l_sum = a_sum = b_sum = 0
+        pixel_count = 0
+        
+        for py in range(h):
+            for px in range(w):
+                pixel = roi.get_pixel(px, py)
+                # 将RGB转换为LAB
+                r, g, b = pixel  # 假设pixel返回(R,G,B)元组
+                l, a, b = rgb_to_lab(r, g, b)
+                l_sum += l
+                a_sum += a
+                b_sum += b
+                pixel_count += 1
+        
+        if pixel_count > 0:
+            avg_l = l_sum / pixel_count
+            avg_a = a_sum / pixel_count
+            avg_b = b_sum / pixel_count
+            
+            # 找到最接近的pH值
+            ph_value = find_closest_ph((avg_l, avg_a, avg_b))
+            if ph_value is not None:
+                detected_ph_list.append((ph_value, (x, y, w, h)))
     
     # 使用NMS去重
     filtered_detections = non_max_suppression(detected_ph_list)
     
     # 在图像上绘制结果
-    for ph_value, blob in filtered_detections:
-        # 在图像上绘制矩形框和pH值
-        img.draw_rectangle(blob[0], blob[1], blob[2], blob[3], color=(255, 0, 0), thickness=4)
-        img.draw_string(blob[0], blob[1] - 30, f"{ph_value}", color=(255, 0, 0), scale=2)
-    
-    
+    for ph_value, rect in filtered_detections:
+        img.draw_rectangle(rect[0], rect[1], rect[2], rect[3], color=(255, 0, 0), thickness=4)
+        img.draw_string(rect[0], rect[1] - 30, f"{ph_value}", color=(255, 0, 0), scale=2)
     
     return filtered_detections, img
 
-def detect_single_ph(img):
-    """只检测并显示最大面积的pH值"""
+def detect_single_ph_new(img):
+    """有问题，暂无法运行。使用新方案只检测并显示最大面积的pH值"""
     detected_ph = None
-    max_blob_size = 0
-    max_blob = None
+    max_rect_size = 0
+    max_rect = None
     
-    # 首先遍历所有pH值，找到最大的色块
-    for ph_value, threshold in pH_thresholds:
-        blobs = img.find_blobs([threshold], pixels_threshold=200)
-        for blob in blobs:
-            current_size = blob[2] * blob[3]  # 计算当前色块大小
-            if current_size > max_blob_size:
-                max_blob_size = current_size
-                detected_ph = ph_value
-                max_blob = blob
+    # 进行矩形检测
+    for r in img.find_rects(threshold=8000):
+        x, y, w, h = r.rect()
+        current_size = w * h
+        
+        if current_size > max_rect_size:
+            # 提取矩形区域内的图像
+            roi = img.copy(x, y, w, h)
+            
+            # 计算ROI区域的平均LAB值
+            l_sum = a_sum = b_sum = 0
+            pixel_count = 0
+            
+            for py in range(h):
+                for px in range(w):
+                    pixel = roi.get_pixel(px, py)
+                    # 将RGB转换为LAB
+                    r, g, b = pixel  # 假设pixel返回(R,G,B)元组
+                    l, a, b = rgb_to_lab(r, g, b)
+                    l_sum += l
+                    a_sum += a
+                    b_sum += b
+                    pixel_count += 1
+            
+            if pixel_count > 0:
+                avg_l = l_sum / pixel_count
+                avg_a = a_sum / pixel_count
+                avg_b = b_sum / pixel_count
+                
+                # 找到最接近的pH值
+                ph_value = find_closest_ph((avg_l, avg_a, avg_b))
+                if ph_value is not None:
+                    max_rect_size = current_size
+                    detected_ph = ph_value
+                    max_rect = (x, y, w, h)
     
-    # 如果找到了有效的色块，则只绘制最大的那个
-    if max_blob is not None:
-        # 在图像上绘制矩形框和pH值
-        img.draw_rectangle(max_blob[0], max_blob[1], max_blob[2], max_blob[3], color=(255, 0, 0), thickness=4)
-        img.draw_string(max_blob[0], max_blob[1] - 30, f"pH:{detected_ph}", color=(255, 0, 0), scale=2)
+    # 如果找到了有效的矩形，则绘制结果
+    if max_rect is not None:
+        img.draw_rectangle(max_rect[0], max_rect[1], max_rect[2], max_rect[3], color=(255, 0, 0), thickness=4)
+        img.draw_string(max_rect[0], max_rect[1] - 30, f"pH:{detected_ph}", color=(255, 0, 0), scale=2)
     
     # 在图像下方固定位置显示检测结果
     if detected_ph is not None:
@@ -140,6 +280,82 @@ def detect_single_ph(img):
         img.draw_string(img.width() - 600, img.height() - 100, "No pH detected", color=(255, 0, 0), scale=5)
     
     return detected_ph, img
+
+def detect_all_ph(img):
+    """检测并显示所有pH值，根据标志位选择检测方案"""
+    if detect_method == NEW_DETECT:
+        return detect_all_ph_new(img)
+    else:
+        detected_ph_list = []
+        
+        # 遍历所有pH值进行检测
+        for ph_value, threshold in pH_thresholds:
+            blobs = img.find_blobs([threshold], pixels_threshold=200)
+            for blob in blobs:
+                detected_ph_list.append((ph_value, blob))
+        
+        # 使用NMS去重
+        filtered_detections = non_max_suppression(detected_ph_list)
+        
+        # 过滤不同pH值但重合度高的检测框
+        final_detections = []
+        for i, (ph_value, blob) in enumerate(filtered_detections):
+            skip = False
+            for j, (other_ph, other_blob) in enumerate(final_detections):
+                if ph_value != other_ph and calculate_iou(blob, other_blob) > 0.1:
+                    # 如果重合度高，保留面积较大的那个
+                    if blob[2] * blob[3] > other_blob[2] * other_blob[3]:
+                        final_detections[j] = (ph_value, blob)
+                    skip = True
+                    break
+            if not skip:
+                final_detections.append((ph_value, blob))
+        
+        # 在图像上绘制结果
+        for ph_value, blob in final_detections:
+            img.draw_rectangle(blob[0], blob[1], blob[2], blob[3], color=(255, 0, 0), thickness=4)
+            img.draw_string(blob[0], blob[1] - 30, f"{ph_value}", color=(255, 0, 0), scale=2)
+        
+        return final_detections, img
+
+def detect_single_ph(img):
+    """只检测并显示最大面积的pH值，根据标志位选择检测方案"""
+    if detect_method == NEW_DETECT:
+        return detect_single_ph_new(img)
+    else:
+        detected_ph = None
+        max_blob_size = 0
+        max_blob = None
+        
+        # 定义面积阈值（像素数）
+        MIN_AREA = 10000  # 最小面积阈值
+        MAX_AREA = 200000  # 最大面积阈值
+        
+        # 首先遍历所有pH值，找到最大的色块
+        for ph_value, threshold in pH_thresholds:
+            blobs = img.find_blobs([threshold], pixels_threshold=200)
+            for blob in blobs:
+                current_size = blob[2] * blob[3]  # 计算当前色块大小
+                # 只考虑在面积范围内的色块
+                if MIN_AREA <= current_size <= MAX_AREA:
+                    if current_size > max_blob_size:
+                        max_blob_size = current_size
+                        detected_ph = ph_value
+                        max_blob = blob
+        
+        # 如果找到了有效的色块，则只绘制最大的那个
+        if max_blob is not None:
+            # 在图像上绘制矩形框和pH值
+            img.draw_rectangle(max_blob[0], max_blob[1], max_blob[2], max_blob[3], color=(255, 0, 0), thickness=4)
+            img.draw_string(max_blob[0], max_blob[1] - 30, f"pH:{detected_ph}", color=(255, 0, 0), scale=2)
+        
+        # 在图像下方固定位置显示检测结果
+        if detected_ph is not None:
+            img.draw_string(img.width() - 420, img.height() - 100, f"pH:{detected_ph}", color=(255, 0, 0), scale=5)
+        else:
+            img.draw_string(img.width() - 600, img.height() - 100, "No pH detected", color=(255, 0, 0), scale=5)
+        
+        return detected_ph, img
 
 def check_key_press(key):
     """检查按键是否按下（带消抖）"""
@@ -151,6 +367,12 @@ def check_key_press(key):
 
 def main():
     try:
+        global io25, detect_method
+        # 配置IO25为输出并置为高电平
+        fpioa.set_function(25, FPIOA.GPIO25)
+        io25 = Pin(25, Pin.OUT)
+        io25.value(1)  # 初始状态设为低电平
+        
         # 初始化摄像头
         sensor = Sensor(width=1280, height=960)
         sensor.reset()
@@ -164,17 +386,17 @@ def main():
         print("pH值颜色识别程序已启动")
         print("KEY0: 切换到实时预览模式")
         print("KEY1: 进行单次pH值识别")
-        print("KEY2: 切换显示模式（单值/多值）")
+        # print("KEY2: 切换检测方案（旧方案/新方案）") # 暂未加入
         
         current_state = PREVIEW_MODE
         last_detected_ph = None
         last_detected_img = None
         is_start_detect = False
-        detect_mode = ALL_DETECT  # 默认使用多值检测模式
+        detect_mode = SINGLE_DETECT  # 默认使用多值检测模式
         
         while True:
             os.exitpoint()
-            
+                        
             # 状态机处理
             if current_state == PREVIEW_MODE:
                 # 实时预览模式
@@ -186,6 +408,12 @@ def main():
                     current_state = DETECT_MODE
                     print("切换到单次识别模式")
                     is_start_detect = True
+                    # # 打开LED灯
+                    # io25.value(1)
+                    # # 等待2秒
+                    # time.sleep_ms(1000)
+                    # # 关闭LED灯
+                    # io25.value(0)
                     # 等待按键释放
                     while key1.value() == 0:
                         time.sleep_ms(10)
@@ -199,8 +427,14 @@ def main():
                 if check_key_press(key1) or is_start_detect:
                     # 捕获当前图像并进行识别
                     is_start_detect = False
-                    img = sensor.snapshot()
+                    # 打开LED灯
+                    # io25.value(1)
+                    # # 等待2秒
+                    # time.sleep_ms(1000)
+                    # # 关闭LED灯
+                    # io25.value(0)
                     
+                    img = sensor.snapshot()
                     # 根据当前检测模式选择检测函数
                     if detect_mode == SINGLE_DETECT:
                         detected_ph, processed_img = detect_single_ph(img)
