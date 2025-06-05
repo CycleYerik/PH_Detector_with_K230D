@@ -1,7 +1,7 @@
 import time, os, sys
-from media.sensor import *  # 导入sensor模块，使用摄像头相关接口
-from media.display import * # 导入display模块，使用display相关接口
-from media.media import *   # 导入media模块，使用meida相关接口
+from media.sensor import *  
+from media.display import * 
+from media.media import *   
 from machine import Pin, FPIOA
 
 # pH值对应的LAB颜色阈值
@@ -24,9 +24,8 @@ pH_thresholds = [
     (14,(13, 20, 22, 30, -51, -40))   # pH 14
 ]
 
-# 初始化FPIOA
+# 初始化各种IO引脚
 fpioa = FPIOA()
-# 配置按键引脚
 fpioa.set_function(34, FPIOA.GPIO34)  # KEY0
 fpioa.set_function(35, FPIOA.GPIO35)  # KEY1
 fpioa.set_function(0, FPIOA.GPIO0)    # KEY2
@@ -34,22 +33,19 @@ key0 = Pin(34, Pin.IN, pull=Pin.PULL_UP, drive=7)
 key1 = Pin(35, Pin.IN, pull=Pin.PULL_UP, drive=7)
 key2 = Pin(0, Pin.IN, pull=Pin.PULL_DOWN, drive=7)  # KEY2默认下拉
 
-# 定义运行模式
+# 运行模式
 PREVIEW_MODE = 0  # 实时预览模式
 DETECT_MODE = 1   # 单次识别模式
 
-# 定义显示模式 (此为配置标志变量)
+# 显示模式 (此为配置标志变量)
 SINGLE_DETECT = 0  # 只显示最大面积的pH值
 ALL_DETECT = 1    # 显示所有检测到的pH值
 
-# 全局变量及配置
+
 io25 = None  # GPIO25引脚对象，用于LED控制
 
-# 定义全局ROI区域 (x, y, width, height)
-# 注意：此处的ROI尺寸应与 sensor.set_framesize() 设置的实际图像分辨率匹配。
-# 如果 sensor.set_framesize(Sensor.VGA) (640x480)，则ROI不应超过此范围。
-# 调整为VGA分辨率下的一个居中ROI，例如 (160, 120, 320, 240)
-global_roi = (160, 0, 480, 480) # 假设使用VGA (640x480) 图像，此为图像中央的ROI
+# ROI检测区域 (x, y, width, height)，图像分辨率为640x480
+global_roi = (160, 0, 480, 480) 
 
 def set_global_roi(x, y, width, height):
     """设置全局ROI区域"""
@@ -58,7 +54,7 @@ def set_global_roi(x, y, width, height):
 
 def is_blob_in_roi(blob_rect, roi): # 接收 (x, y, w, h) 元组
     """检查blob_rect是否在ROI区域内"""
-    x, y, w, h = blob_rect # 现在解包是有效的
+    x, y, w, h = blob_rect 
     roi_x, roi_y, roi_w, roi_h = roi
     
     # 检查blob的中心点是否在ROI内
@@ -66,7 +62,7 @@ def is_blob_in_roi(blob_rect, roi): # 接收 (x, y, w, h) 元组
     center_y = y + h // 2
     
     return (roi_x <= center_x <= roi_x + roi_w and 
-            roi_y <= center_y <= roi_h + roi_y) # 修正: roi_y + roi_h
+            roi_y <= center_y <= roi_h + roi_y)
 
 def calculate_iou(box1, box2):
     """计算两个框的IoU（交并比）"""
@@ -113,29 +109,44 @@ def non_max_suppression(detections, iou_threshold=0.1):
 def detect_all_ph(img):
     """检测并显示多个pH值"""
     detected_ph_list = []
-    MAX_AREA = 60000  # 最大面积阈值
+    MAX_AREA = 60000  # 单个色块最大像素面积阈值
 
     # 遍历所有pH值阈值进行检测
     for ph_value, threshold in pH_thresholds:
-        blobs = img.find_blobs([threshold], pixels_threshold=20000, merge=True)
+        blobs = img.find_blobs([threshold], pixels_threshold=2000, merge=True)
         for blob in blobs:
-            blob_rect = blob.rect() # 获取 (x, y, w, h) 元组
+            blob_rect = blob.rect() 
             # 检查blob_rect是否在ROI区域内且满足面积限制
             if blob_rect[2] * blob_rect[3] <= MAX_AREA and is_blob_in_roi(blob_rect, global_roi):
-                detected_ph_list.append((ph_value, blob_rect)) # 存储 pH 值和矩形元组
+                detected_ph_list.append((ph_value, blob_rect)) 
 
     # 非极大值抑制，去除重叠的检测框
     final_detections = non_max_suppression(detected_ph_list)
 
-    # 在图像上绘制ROI区域 (在检测模式下也绘制，以示检测范围)
+    # 绘制ROI区域，以示检测范围
     img.draw_rectangle(global_roi[0], global_roi[1], global_roi[2], global_roi[3], 
                       color=(0, 255, 0), thickness=2)
 
     # 在图像上绘制结果
-    for ph_value, blob_rect in final_detections: # 迭代的是 (ph_value, 矩形元组)
+    for ph_value, blob_rect in final_detections:
         img.draw_rectangle(blob_rect[0], blob_rect[1], blob_rect[2], blob_rect[3], color=(255, 0, 0), thickness=4)
         text_y = max(0, blob_rect[1] - 30)
         img.draw_string(blob_rect[0], text_y, f"{ph_value}", color=(255, 0, 0), scale=2)
+
+    # 将识别的结果显示在左侧
+    text_display_x = 10
+    text_display_y_base = img.height() // 4
+    # 新增模式显示
+    mode_display_y = text_display_y_base - 45
+    img.draw_string(text_display_x, mode_display_y, "All", color=(255, 255, 255), scale=3)
+    img.draw_string(text_display_x, text_display_y_base, "pH", color=(255, 255, 255), scale=4)
+    value_display_y = text_display_y_base + 50
+    if final_detections:
+        value_str = ",".join(str(ph) for ph, _ in final_detections)
+    else:
+        value_str = "NO"
+    img.draw_string(text_display_x, value_display_y, value_str, color=(255, 0, 0), scale=4)
+    
 
     return final_detections, img
 
@@ -143,23 +154,23 @@ def detect_single_ph(img):
     """检测并显示单pH值"""
     detected_ph = None
     max_blob_size = 0
-    max_blob_rect = None # 存储面积最大的色块的矩形元组
+    max_blob_rect = None 
     MAX_AREA = 60000  # 最大面积阈值
 
-    # 首先遍历所有pH值，找到面积最大的色块
+    # 遍历所有pH值，找到面积最大的色块
     for ph_value, threshold in pH_thresholds:
         blobs = img.find_blobs([threshold], pixels_threshold=500, merge=True)
         for blob in blobs:
-            blob_rect = blob.rect() # 获取 (x, y, w, h) 元组
-            current_size = blob_rect[2] * blob_rect[3] # 使用元组的宽高计算面积
+            blob_rect = blob.rect()
+            current_size = blob_rect[2] * blob_rect[3] 
             # 检查blob_rect是否在ROI区域内且满足面积限制
             if current_size <= MAX_AREA and is_blob_in_roi(blob_rect, global_roi):
                 if current_size > max_blob_size:
                     max_blob_size = current_size
                     detected_ph = ph_value
-                    max_blob_rect = blob_rect # 存储矩形元组
+                    max_blob_rect = blob_rect 
 
-    # 在图像上绘制ROI区域 (在检测模式下也绘制，以示检测范围)
+    # 绘制ROI区域，以示检测范围
     img.draw_rectangle(global_roi[0], global_roi[1], global_roi[2], global_roi[3], 
                       color=(0, 255, 0), thickness=2)
 
@@ -170,31 +181,20 @@ def detect_single_ph(img):
         text_y = max(0, max_blob_rect[1] - 30)
         img.draw_string(max_blob_rect[0], text_y, f"pH:{detected_ph}", color=(255, 0, 0), scale=2)
 
-    # ====== START: 修改的显示逻辑 ======
-    # 定义文本显示的起始X坐标（靠近左侧）
+    # 将识别的结果显示在左侧
     text_display_x = 10
-    # 定义文本显示的起始Y坐标（中上部）
-    # img.height() // 4 大约是总高的四分之一处
     text_display_y_base = img.height() // 4 
-
-    # 绘制 "pH" 标签
-    # 使用白色，比例为4，使其足够大且清晰
+    # 模式显示
+    mode_display_y = text_display_y_base - 45
+    img.draw_string(text_display_x, mode_display_y, "Single", color=(255, 255, 255), scale=3)
     img.draw_string(text_display_x, text_display_y_base, "pH", color=(255, 255, 255), scale=4)
-
-    # 计算pH值或"NO"的Y坐标，使其在"pH"标签的下一行
-    # 假设 scale=4 的文本高度大约是40-50像素，这里使用50作为偏移量
     value_display_y = text_display_y_base + 50 
-
-    # 根据是否检测到pH值来确定显示内容
     if detected_ph is not None:
         value_str = f"{detected_ph}"
     else:
         value_str = "NO"
-    
-    # 绘制pH值或"NO"
-    # 使用红色，比例为4
     img.draw_string(text_display_x, value_display_y, value_str, color=(255, 0, 0), scale=4)
-    # ====== END: 修改的显示逻辑 ======
+
 
     return detected_ph, img
 
@@ -225,7 +225,7 @@ def main():
     try:
         global io25
 
-        # 配置IO25为输出并置为低电平（初始关闭）
+        # 配置IO25为输出并置为低电平
         fpioa.set_function(25, FPIOA.GPIO25)
         io25 = Pin(25, Pin.OUT)
         io25.value(1) # 初始状态设为低电平（LED补光灯关闭）
@@ -251,13 +251,12 @@ def main():
         last_detected_ph = None
         last_detected_img = None
         is_start_detect = False
-        detect_mode = ALL_DETECT # 保持 detect_mode 初始值不变
+        detect_mode = ALL_DETECT
 
         # 主循环，实现状态机
         while True:
             os.exitpoint()
 
-            # 状态机处理
 
             # 切换检测功能
             if check_key_press_k2(key2):
@@ -275,10 +274,13 @@ def main():
             if current_state == PREVIEW_MODE:
                 img = sensor.snapshot()
                 
-                # 在实时预览中绘制ROI区域
-                # 使用绿色边框，厚度为2
+                # 绘制ROI区域
                 img.draw_rectangle(global_roi[0], global_roi[1], global_roi[2], global_roi[3], 
                                   color=(0, 255, 0), thickness=2)
+                # 在左上角显示 'live'
+                text_display_x = 10
+                text_display_y_base = img.height() // 4
+                img.draw_string(text_display_x, text_display_y_base, "live", color=(255, 255, 255), scale=5)
                 
                 Display.show_image(img)
 
@@ -333,7 +335,7 @@ def main():
                 # 检查是否切换回预览模式
                 if check_key_press(key0):
                     current_state = PREVIEW_MODE
-                    io25.value(1) # 切换回预览模式时，确保补光灯关闭（或根据需求调整）
+                    io25.value(1) # 切换回预览模式时，确保补光灯关闭
                     print("切换到实时预览模式")
                     # 等待按键释放
                     while key0.value() == 0:
