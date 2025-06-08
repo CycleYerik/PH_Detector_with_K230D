@@ -34,7 +34,6 @@ key1 = Pin(35, Pin.IN, pull=Pin.PULL_UP, drive=7)
 key2 = Pin(0, Pin.IN, pull=Pin.PULL_DOWN, drive=7)  # KEY2默认下拉
 
 
-
 #! 各种模式的配置
 
 # 运行模式
