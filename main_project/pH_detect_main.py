@@ -7,21 +7,21 @@ from machine import Pin, FPIOA
 # pH值对应的LAB颜色阈值
 # 格式: (pH值, (L_min, L_max, A_min, A_max, B_min, B_max))
 pH_thresholds = [
-    (0, (20, 43, -4, 5, 30, 40)),    # pH 0
-    (1, (15, 48, 24,36,-27,-17)),    # pH 1
-    (2, (20, 80, 19,26, -12, 2)),    # pH 2
-    (3, (20, 76, 10,20,-4,10)),     # pH 3
-    (4, (20, 100, -1,11,20,38)),     # pH 4
-    (5, (5, 100, -15,-5,24,37)),     # pH 5
-    (6, (11, 100, -28,-16,39,50)),     # pH 6
-    (7, (11, 100, -26,-18,20,30)),    # pH 7
-    (8, (21, 100, -24,-16,4,15)),   # pH 8
-    (9, (0, 55, -23,-13,-8,6)),   # pH 9
-    (10,(0, 36, 3,14,-42,-29)),  # pH 10
-    (11, (0, 50,17,26,-46,-40)),  # pH 11
-    (12, (0, 46, 26,38,-60,-48)),  # pH 12
-    (13,(0, 25, 12,23,-41,-30)),  # pH 13
-    (14,(0, 20, 22, 34, -52, -42))   # pH 14
+    (0, (20, 43, -4, 5, 30, 40)),     # pH 0
+    (1, (15, 48, 24,36,-30,-19)),     # pH 1
+    (2, (20, 80, 18,29, -20, -5)),    # pH 2
+    (3, (20, 76, 10,20,-11,7)),      # pH 3
+    (4, (20, 100, -1,11,9,31)),      # pH 4
+    (5, (5, 100, -17,-5,24,37)),     # pH 5
+    (6, (11, 100, -32,-21,30,50)),     # pH 6
+    (7, (11, 100, -22,-12,12,32)),    # pH 7
+    (8, (21, 100, -27,-16,-9,10)),   # pH 8
+    (9, (0, 55, -23,-13,-3,11)),    # pH 9
+    (10,(0, 36, 3,14,-44,-36)),   # pH 10
+    (11, (0, 30,14,23,-44,-36)),   # pH 11
+    (12, (0, 46, 28,40,-60,-55)),   # pH 12
+    (13,(0, 25, 10,23,-39,-23)),   # pH 13
+    (14,(0, 20, 15, 33, -52, -45))   # pH 14
 ]
 
 # 初始化各种IO引脚
@@ -42,21 +42,19 @@ DETECT_MODE = 1   # 单次识别模式
 
 # 显示模式 (此为配置标志变量)
 SINGLE_DETECT = 0  # 只显示最大面积的pH值
-ALL_DETECT = 1    # 显示所有检测到的pH值
+ALL_DETECT = 1     # 显示所有检测到的pH值
 
 # 显示控制标志
 SHOW_BOX = True   # 控制是否显示框选结果
 
-
-
-
-
-
 io25 = None  # GPIO25引脚对象，用于LED控制
 
 # ROI检测区域 (x, y, width, height)，图像分辨率为640x480
-#global_roi = (160, 0, 480, 480)  # 整个正方形框
-global_roi = (320 , 0 , 160, 480)
+# 默认的全局ROI设置为较大的区域
+global_roi = (180, 0, 460, 480)  # 整个正方形框
+# 定义两种ROI配置
+ROI_LARGE = (180, 0, 460, 480)  # 较大的ROI
+ROI_SMALL = (320, 0, 160, 480) # 较小的ROI，根据需要调整
 
 def set_global_roi(x, y, width, height):
     """设置全局ROI区域"""
@@ -133,7 +131,7 @@ def detect_all_ph(img):
 
     # 绘制ROI区域，以示检测范围
     img.draw_rectangle(global_roi[0], global_roi[1], global_roi[2], global_roi[3],
-                          color=(0, 255, 0), thickness=2)
+                       color=(0, 255, 0), thickness=2)
 
     # 在图像上绘制结果
     if SHOW_BOX:
@@ -155,7 +153,7 @@ def detect_all_ph(img):
         value_str = ",".join(str(ph) for ph in unique_ph_values)
     else:
         value_str = "NO"
-    img.draw_string(text_display_x, value_display_y, value_str, color=(255, 0, 0), scale=4)
+    img.draw_string(text_display_x, value_display_y, value_str, color=(255, 0, 0), scale=2)
 
     return final_detections, img
 
@@ -180,7 +178,7 @@ def detect_single_ph(img):
 
     # 绘制ROI区域，以示检测范围
     img.draw_rectangle(global_roi[0], global_roi[1], global_roi[2], global_roi[3],
-                          color=(0, 255, 0), thickness=2)
+                       color=(0, 255, 0), thickness=2)
 
     # 如果找到了有效的色块，则绘制最大的
     if max_blob_rect is not None and SHOW_BOX:
@@ -200,7 +198,7 @@ def detect_single_ph(img):
         value_str = f"{detected_ph}"
     else:
         value_str = "NO"
-    img.draw_string(text_display_x, value_display_y, value_str, color=(255, 0, 0), scale=4)
+    img.draw_string(text_display_x, value_display_y, value_str, color=(255, 0, 0), scale=2)
 
     return detected_ph, img
 
@@ -229,7 +227,7 @@ def flash_led(duration_ms=1000):
 
 def main():
     try:
-        global io25
+        global io25, global_roi # 声明global_roi为全局变量
 
         # 配置IO25为输出并置为低电平
         fpioa.set_function(25, FPIOA.GPIO25)
@@ -251,27 +249,28 @@ def main():
         print("pH值颜色识别程序已启动")
         print("KEY0: 切换到实时预览模式")
         print("KEY1: 进行单次pH值识别")
-        print("KEY2: 切换识别模式 (单次检测/所有检测)")
+        print("KEY2: 切换识别模式 (单次检测/所有检测) 并调整ROI大小")
 
         current_state = PREVIEW_MODE
         last_detected_ph = None
         last_detected_img = None
         is_start_detect = False
-        detect_mode = ALL_DETECT
+        detect_mode = ALL_DETECT # 初始为ALL_DETECT模式
 
         # 主循环，实现状态机
         while True:
             os.exitpoint()
 
-
-            # 切换检测功能
+            # 切换检测功能和ROI大小
             if check_key_press_k2(key2):
                 if detect_mode == SINGLE_DETECT:
                     detect_mode = ALL_DETECT
-                    print("切换到检测所有pH值模式")
+                    set_global_roi(*ROI_LARGE) # 切换到all_detect时设置大ROI
+                    print("切换到检测所有pH值模式，ROI设置为大区域")
                 else:
                     detect_mode = SINGLE_DETECT
-                    print("切换到单次检测pH值模式")
+                    set_global_roi(*ROI_SMALL) # 切换到single_detect时设置小ROI
+                    print("切换到单次检测pH值模式，ROI设置为小区域")
                 # 等待按键释放
                 while key2.value() == 1:
                     time.sleep_ms(10)
@@ -282,7 +281,7 @@ def main():
 
                 # 绘制ROI区域
                 img.draw_rectangle(global_roi[0], global_roi[1], global_roi[2], global_roi[3],
-                                  color=(0, 255, 0), thickness=2)
+                                   color=(0, 255, 0), thickness=2)
                 # 在左上角显示 'live'
                 text_display_x = 10
                 text_display_y_base = img.height() // 4
